@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = ["crates/molses", "crates/molses-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/molses"
+authors = ["molses contributors"]
+description = "Solvent Excluded Surface (Connolly surface) generation for molecular structures"
+
+[workspace.dependencies]
+molses = { path = "crates/molses", version = "0.1.0" }
+pdbtbx = "0.12"
+glam = "0.34"
+rayon = "1.12"
+wide = "1.7"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+memmap2 = "0.9"
+flate2 = "1"
+clap = { version = "4.6", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+mimalloc = { version = "0.1", default-features = false }
+criterion = "0.8"
+proptest = "1"
+insta = "1"
+assert_cmd = "2"
+predicates = "3"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

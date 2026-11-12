@@ -1,0 +1,32 @@
+[package]
+name = "molses-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "CLI for generating Solvent Excluded Surface (Connolly) meshes from molecular structures"
+readme = "../../README.md"
+
+[[bin]]
+name = "molses"
+path = "src/main.rs"
+
+[dependencies]
+molses = { workspace = true, features = ["parallel", "simd"] }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = []
+mimalloc = ["dep:mimalloc"]
+
+[dependencies.mimalloc]
+workspace = true
+optional = true
+
+[lints]
+workspace = true

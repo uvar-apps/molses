@@ -1,0 +1,21 @@
+# Build artifacts
+/target/
+
+# Generated meshes (large)
+*.obj
+*.ply
+*.stl
+
+# Screenshots
+*.png
+*.jpg
+*.jpeg
+
+# OS noise
+.DS_Store
+
+# Scratch / unvetted data
+/data/
+
+# Downloaded copyrighted papers (use DOI links instead)
+/research/papers/
