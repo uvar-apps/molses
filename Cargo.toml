@@ -7,8 +7,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/example/molses"
-authors = ["molses contributors"]
+repository = "https://github.com/uvar-apps/molses"
+homepage = "https://github.com/uvar-apps/molses"
+documentation = "https://docs.rs/molses"
+authors = ["Ugo Varetto"]
 description = "Solvent Excluded Surface (Connolly surface) generation for molecular structures"
 
 [workspace.dependencies]

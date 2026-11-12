@@ -5,9 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 authors.workspace = true
 description = "CLI for generating Solvent Excluded Surface (Connolly) meshes from molecular structures"
 readme = "../../README.md"
+keywords = ["molecular-surface", "connolly", "ses", "pdb", "cli"]
+categories = ["science", "command-line-utilities"]
 
 [[bin]]
 name = "molses"
