@@ -4,6 +4,7 @@
 //! exact Euclidean distance transform → signed distance `f_sas` → offset
 //! `f_ses = f_sas + r_p`.
 
+pub mod analytic;
 pub mod celllist;
 pub mod edt;
 pub mod paint;

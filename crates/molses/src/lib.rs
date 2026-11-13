@@ -247,13 +247,19 @@ pub fn ses(structure: &Structure, opts: &SesOptions) -> Result<Mesh> {
         }
     }
 
-    // --- Field construction (M2) ---
+    // --- Field construction: EDT-based signed distance with sub-voxel correction ---
+    // EDT gives correct topology (watertight, Euler). Exact edge roots below
+    // remove quantization jitter from vertex positions.
     let mut fld = field::ScalarField::new(dims, origin, h)?;
-    let painted = field::paint::paint(structure.atoms(), probe, &fld);
+    let paint_probe = match opts.surface {
+        SurfaceKind::Vdw => 0.0,
+        _ => probe,
+    };
+    let painted = field::paint::paint(structure.atoms(), paint_probe, &fld);
     let edt_sq = field::edt::edt_squared(&painted.inside, dims);
     field::paint::assemble_signed_distance(&painted, &edt_sq, h, &mut fld);
 
-    // For SAS the zero set is `f_sas` itself; for SES offset by probe.
+    // Offset by probe radius for SES (f_ses = f_sas + r_p).
     if matches!(opts.surface, SurfaceKind::Ses) {
         let data = fld.data_mut();
         for v in data.iter_mut() {
@@ -261,30 +267,93 @@ pub fn ses(structure: &Structure, opts: &SesOptions) -> Result<Mesh> {
         }
     }
 
-    // Break exact zero ties: when `r_p / h` is an integer, whole EDT shells
-    // carry f = 0.0 exactly, which collapses every edge crossing onto a grid
-    // vertex and punches holes in the mesh. A smooth deterministic nudge far
-    // below the grid spacing moves crossings off grid points without affecting
-    // geometry.
-    perturb_ties(&mut fld, h as f32 * 1e-4);
-
-    // --- Mesh extraction (M3) ---
-    let mut mesh = mesh::polygonize::polygonize(&fld);
-    // Gradient normals are the exact surface normals of the SDF and shade
-    // smoothly even on a faceted mesh (the default and preferred method).
-    mesh::normals::compute_gradient_normals(&mut mesh, &fld);
+    // --- Mesh extraction ---
+    // Exact edge roots need the atoms (contact spheres). Reentrant toric
+    // roots stay off by default (MOLSES_REENTRANT=1) — they need more care.
+    let root_atoms = match opts.surface {
+        SurfaceKind::Ses | SurfaceKind::Vdw => Some(structure.atoms()),
+        SurfaceKind::Sas => None,
+    };
+    let mut mesh = mesh::polygonize::polygonize(&fld, root_atoms, probe);
+    // Put every surface vertex exactly on its analytic patch:
+    // contact → VdW sphere; reentrant → torus at r_p from an intersection
+    // circle. Corrections are bounded by ~h (we only move vertices already
+    // near the target), so topology and area stay put.
+    let mut patches = vec![mesh::normals::Patch::None; mesh.positions.len()];
+    if matches!(opts.surface, SurfaceKind::Ses | SurfaceKind::Vdw) {
+        project_exact_patches(&mut mesh, structure.atoms(), probe, h, &fld, &mut patches);
+    }
+    // Angle-weighted geometric normals, then blend toward exact radial
+    // shading on contact patches (removes polyhedral faceting on snapped
+    // vertices without analytic/reentrant seam artifacts).
+    mesh::normals::compute_normals(&mut mesh, Some(&fld));
+    if matches!(opts.surface, SurfaceKind::Ses | SurfaceKind::Vdw) {
+        mesh::normals::apply_patch_normals(&mut mesh, structure.atoms(), probe, &patches);
+        mesh::normals::repair_flipped_normals(&mut mesh);
+    }
+    // Smooth ONLY reentrant vertex positions (Taubin, non-shrinking).
+    // Contact-patch vertices are locked to their VdW spheres.
     if opts.smoothing > 0 {
-        // Taubin (λ|μ) smoothing: two Laplacian passes with opposite signs so
-        // the mesh smooths without shrinking.
+        // Identify contact-patch vertices (locked) vs reentrant (free).
+        let locked: Vec<bool> = mesh
+            .positions
+            .iter()
+            .map(|p| {
+                structure.atoms().iter().any(|a| {
+                    let dx = p[0] as f64 - a.position[0];
+                    let dy = p[1] as f64 - a.position[1];
+                    let dz = p[2] as f64 - a.position[2];
+                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                    (dist - a.radius).abs() < h * 0.3
+                })
+            })
+            .collect();
+        // Build neighbor list.
+        use std::collections::HashMap;
+        let n_v = mesh.positions.len();
+        let mut neighbors: Vec<Vec<u32>> = vec![Vec::new(); n_v];
+        for t in &mesh.indices {
+            for k in 0..3 {
+                let a = t[k] as usize;
+                for j in [t[(k + 1) % 3], t[(k + 2) % 3]] {
+                    if !neighbors[a].contains(&j) {
+                        neighbors[a].push(j);
+                    }
+                }
+            }
+        }
         let lambda = 0.5f32;
         let mu = -0.53f32;
         for _ in 0..opts.smoothing {
-            mesh::smooth::laplacian(&mut mesh, 1, lambda);
-            mesh::smooth::laplacian(&mut mesh, 1, mu);
+            for (w, pass) in [(lambda, 0u8), (mu, 1u8)] {
+                let current = mesh.positions.clone();
+                for i in 0..n_v {
+                    if locked[i] {
+                        continue;
+                    }
+                    let nb = &neighbors[i];
+                    if nb.is_empty() {
+                        continue;
+                    }
+                    let mut avg = [0.0f32; 3];
+                    for &j in nb {
+                        let q = current[j as usize];
+                        avg[0] += q[0];
+                        avg[1] += q[1];
+                        avg[2] += q[2];
+                    }
+                    let inv = 1.0 / nb.len() as f32;
+                    avg = [avg[0] * inv, avg[1] * inv, avg[2] * inv];
+                    mesh.positions[i] = [
+                        current[i][0] + w * (avg[0] - current[i][0]),
+                        current[i][1] + w * (avg[1] - current[i][1]),
+                        current[i][2] + w * (avg[2] - current[i][2]),
+                    ];
+                }
+                let _ = pass;
+            }
         }
-        // Recompute normals from the geometry after moving vertices; then
-        // smooth them so shading stays clean.
-        mesh::normals::compute_gradient_normals(&mut mesh, &fld);
+        let _ = HashMap::<u32, u32>::new();
     }
 
     // --- Component policy (F-SUR-5) ---
@@ -317,19 +386,193 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Add a smooth deterministic perturbation of amplitude `eps` to every sample
-/// of `fld`, breaking exact zero ties (see `ses`).
-fn perturb_ties(fld: &mut field::ScalarField, eps: f32) {
-    let [nx, ny, nz] = fld.dims();
-    let data = fld.data_mut();
-    for z in 0..nz {
-        for y in 0..ny {
-            for x in 0..nx {
-                let i = x + y * nx + z * nx * ny;
-                // Cheap smooth hash in [-1, 1].
-                let s = (x as f32 * 12.9898 + y as f32 * 78.233 + z as f32 * 37.719).sin();
-                data[i] += eps * s;
+type V3 = [f64; 3];
+
+#[inline]
+fn sub3(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+#[inline]
+fn add3(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+#[inline]
+fn scale3(a: V3, s: f64) -> V3 {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+#[inline]
+fn dot3(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+#[inline]
+fn len3(a: V3) -> f64 {
+    dot3(a, a).sqrt()
+}
+
+/// Put every surface vertex exactly on the analytic patch it represents.
+///
+/// Two patch families occur. A vertex on a **contact** patch lies on the VdW
+/// sphere of one atom. A vertex on a **concave** patch lies on the canal torus
+/// of an atom pair: the set of points at distance `probe` from the circle a
+/// probe traces while touching both atoms, taken on the crevice-facing half of
+/// that circle. Correcting instead of re-rooting keeps the tessellation (and
+/// therefore the topology) exactly as the mesher produced it.
+///
+/// A projection is accepted only when the matching probe centre sits outside
+/// every other atom's probe-inflated ball. That one visibility rule is what
+/// keeps 3-body pockets — whose surface belongs to no 2-atom torus — from
+/// being flattened onto one, and it is also what makes a contact vertex under
+/// a neighbour stay put.
+///
+/// Neighbourhoods come from a cell list, so cost is linear in vertices;
+/// resolving hosts against every atom pair cost more than the field and the
+/// mesher put together.
+fn project_exact_patches(
+    mesh: &mut Mesh,
+    atoms: &[Atom],
+    probe: f64,
+    h: f64,
+    fld: &field::ScalarField,
+    patch: &mut [mesh::normals::Patch],
+) {
+    /// Circle traced by a probe touching both atoms of a pair.
+    struct Circle {
+        o: V3,
+        r: f64,
+        u: V3,
+    }
+    let mut circles: Vec<Circle> = Vec::new();
+    // atom -> (partner atom, circle index)
+    let mut links: Vec<Vec<(u32, u32)>> = vec![Vec::new(); atoms.len()];
+    if probe > 0.0 {
+        for i in 0..atoms.len() {
+            for j in (i + 1)..atoms.len() {
+                let ri = atoms[i].radius + probe;
+                let rj = atoms[j].radius + probe;
+                let e = sub3(atoms[j].position, atoms[i].position);
+                let d = len3(e);
+                if d < 1e-9 || d >= ri + rj || d <= (ri - rj).abs() {
+                    continue;
+                }
+                let t = (d * d + ri * ri - rj * rj) / (2.0 * d);
+                let rc2 = ri * ri - t * t;
+                if rc2 <= 1e-12 {
+                    continue;
+                }
+                let id = circles.len() as u32;
+                circles.push(Circle {
+                    o: add3(atoms[i].position, scale3(e, t / d)),
+                    r: rc2.sqrt(),
+                    u: scale3(e, 1.0 / d),
+                });
+                links[i].push((j as u32, id));
+                links[j].push((i as u32, id));
             }
+        }
+    }
+
+    let r_max = atoms.iter().map(|a| a.radius).fold(0.0f64, f64::max);
+    // Covers any possible host pair and any atom that could hide a probe
+    // centre belonging to this vertex.
+    let reach = r_max + 2.0 * probe + 3.0 * h;
+    let cells = field::celllist::CellList::new(atoms, reach, fld.origin(), fld.dims(), h);
+    let slack = 0.05 * h;
+    let mut near: Vec<u32> = Vec::with_capacity(64);
+    let mut nd: Vec<f64> = Vec::with_capacity(64);
+    let mut stamp = vec![0u32; atoms.len()];
+
+    for (pi, p) in mesh.positions.iter_mut().enumerate() {
+        let q = [p[0] as f64, p[1] as f64, p[2] as f64];
+        let epoch = pi as u32 + 1;
+        cells.query(q, reach, &mut near);
+        nd.clear();
+        let mut on_sphere = false;
+        let mut host = usize::MAX;
+        let mut host_err = f64::INFINITY;
+        for &k in &near {
+            stamp[k as usize] = epoch;
+            let a = &atoms[k as usize];
+            let d = len3(sub3(q, a.position));
+            let err = (d - a.radius).abs();
+            if err < 0.05 * h {
+                on_sphere = true;
+            }
+            if err < host_err {
+                host_err = err;
+                host = k as usize;
+            }
+            nd.push(d);
+        }
+
+        // `true` when a probe centred at `pc` overlaps no local atom other
+        // than the two it is meant to touch.
+        let clear = |pc: V3, skip: usize, skip2: usize| -> bool {
+            near.iter().all(|&k| {
+                let ki = k as usize;
+                ki == skip
+                    || ki == skip2
+                    || len3(sub3(pc, atoms[ki].position)) >= atoms[ki].radius + probe - slack
+            })
+        };
+
+        // --- contact patch: onto the host sphere ---
+        if host != usize::MAX && host_err < 1.5 * h {
+            let a = &atoms[host];
+            let v = sub3(q, a.position);
+            let d = len3(v);
+            let uv = scale3(v, 1.0 / d.max(1e-12));
+            if d > 1e-12
+                && clear(
+                    add3(a.position, scale3(uv, a.radius + probe)),
+                    host,
+                    usize::MAX,
+                )
+            {
+                let np = add3(a.position, scale3(uv, a.radius));
+                *p = [np[0] as f32, np[1] as f32, np[2] as f32];
+                patch[pi] = mesh::normals::Patch::Contact(host as u32);
+                continue;
+            }
+        }
+        // Sitting on a sphere but not projectable, or a VdW-only surface.
+        if on_sphere || circles.is_empty() {
+            continue;
+        }
+
+        // --- canal patch: onto the torus of the best visible pair ---
+        // (distance from the circle, nearest circle point, hosts)
+        type CanalHit = (f64, V3, usize, usize);
+        let mut best: Option<CanalHit> = None;
+        let mut best_err = 0.5 * h;
+        for (t, &ka) in near.iter().enumerate() {
+            // A host cannot be further from the surface point than its own
+            // inflated radius; this prunes the pair enumeration hard.
+            if nd[t] > atoms[ka as usize].radius + probe + h {
+                continue;
+            }
+            for &(kb, ci) in &links[ka as usize] {
+                if kb <= ka || stamp[kb as usize] != epoch {
+                    continue;
+                }
+                let c = &circles[ci as usize];
+                let w = sub3(q, c.o);
+                let perp = sub3(w, scale3(c.u, dot3(w, c.u)));
+                let rho2 = dot3(perp, perp);
+                if rho2 >= c.r * c.r || rho2 < 1e-24 {
+                    continue; // outer half of the torus carries no SES
+                }
+                let npt = add3(c.o, scale3(perp, c.r / rho2.sqrt()));
+                let err = (len3(sub3(q, npt)) - probe).abs();
+                if err < best_err && clear(npt, ka as usize, kb as usize) {
+                    best_err = err;
+                    best = Some((len3(sub3(q, npt)), npt, ka as usize, kb as usize));
+                }
+            }
+        }
+        if let Some((dn, npt, ai, aj)) = best {
+            let np = add3(npt, scale3(sub3(q, npt), probe / dn));
+            *p = [np[0] as f32, np[1] as f32, np[2] as f32];
+            patch[pi] = mesh::normals::Patch::Canal(ai as u32, aj as u32);
         }
     }
 }
@@ -414,6 +657,143 @@ mod tests {
             ..SesOptions::default()
         };
         let mesh = ses(&structure, &opts).unwrap();
+        let report = mesh::topology::audit(&mesh);
+        assert!(report.is_watertight(), "{report:?}");
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+    use crate::structure::Element;
+
+    /// Two-atom SES analytic reference (Richards 1977, Connolly 1983).
+    ///
+    /// Atoms: R=1.7, d=3.4 (just touching), probe r_p=1.4.
+    /// The SES toric reentrant patch dips to y=1.192 at x=0 (between atoms).
+    /// Contact patches extend to theta_max=56.74° from the bond axis.
+    /// Contact endpoint at (-0.768, 1.422) relative to atom 1 at (-1.7, 0).
+    fn two_atom_mesh() -> Mesh {
+        let atoms = vec![
+            Atom::new([-1.7, 0.0, 0.0], 1.7, Some(Element::C), 1),
+            Atom::new([1.7, 0.0, 0.0], 1.7, Some(Element::C), 2),
+        ];
+        let structure = Structure::from_atoms(
+            atoms,
+            structure::SourceInfo {
+                path: "two-atom".into(),
+                format: "synthetic".into(),
+                model_count: 1,
+            },
+        );
+        let opts = SesOptions {
+            probe_radius: 1.4,
+            grid_spacing: 0.15, // fine enough for analytic comparison
+            ..SesOptions::default()
+        };
+        ses(&structure, &opts).unwrap()
+    }
+
+    /// The SES reentrant surface between two atoms dips to y=1.192 at x=0.
+    /// If the mesh has no vertices near that point, the reentrant patch is
+    /// missing or wrong.
+    #[test]
+    fn two_atom_reentrant_patch_exists() {
+        let mesh = two_atom_mesh();
+        // The toric reentrant inner point is at (0, 1.192, 0).
+        // Check for mesh vertices within 0.15 Å of that point.
+        let target = [0.0f32, 1.192, 0.0];
+        let mut min_dist = f32::MAX;
+        for p in &mesh.positions {
+            let d = ((p[0] - target[0]).powi(2)
+                + (p[1] - target[1]).powi(2)
+                + (p[2] - target[2]).powi(2))
+            .sqrt();
+            min_dist = min_dist.min(d);
+        }
+        assert!(
+            min_dist < 0.15,
+            "No mesh vertex near toric reentrant point (0, 1.192, 0). \
+             Closest vertex is {min_dist:.3} Å away. \
+             The reentrant patch is missing or displaced. \
+             This is the key SES geometry test."
+        );
+    }
+
+    /// The SES must dip INTO the crevice between the atoms.
+    /// The VdW surface at z=0 has y=0 at x=0 (atoms just touching).
+    /// The SES reentrant surface is at y=1.192 (above the VdW contact).
+    /// If the mesh at x=0, z=0 has max y < 1.0, the reentrant patch is too low.
+    #[test]
+    fn two_atom_reentrant_dips_correctly() {
+        let mesh = two_atom_mesh();
+        // Find vertices near x=0, z=0 (the bond axis cross-section).
+        let mut max_y = f32::MIN;
+        let mut count = 0;
+        for p in &mesh.positions {
+            if p[0].abs() < 0.2 && p[2].abs() < 0.2 {
+                if p[1] > max_y {
+                    max_y = p[1];
+                }
+                count += 1;
+            }
+        }
+        assert!(count > 0, "No vertices near the bond axis");
+        // The toric patch reaches y=1.192. Contact patches go up to y=1.422.
+        // The highest point near x=0 should be around y=1.19 (toric) or higher
+        // if contact patches extend there.
+        assert!(
+            max_y > 1.0 && max_y < 1.6,
+            "Bond-axis cross-section max y = {max_y:.3}, expected ~1.19–1.42. \
+             The reentrant geometry is wrong."
+        );
+    }
+
+    /// The SES area of two just-touching atoms = contact patches + toric saddle.
+    /// Analytic: contacts = 2·2πR²(1+cos θ_max) = 56.2 Å², toric ≈ 11.9 Å².
+    /// Total ≈ 68 Å² (LESS than VdW 72.6 because hidden caps are replaced by
+    /// the smaller toric saddle).
+    #[test]
+    fn two_atom_area_analytic() {
+        let mesh = two_atom_mesh();
+        let ses_area = mesh.area();
+        // Analytic total ≈ 68.1 Å². Allow 5% tolerance for discretization.
+        assert!(
+            (ses_area - 68.1).abs() / 68.1 < 0.05,
+            "SES area {ses_area:.1}, expected 68.1 ± 5%. \
+             Contact patches (56.2) + toric saddle (11.9)."
+        );
+    }
+
+    /// The contact patch on each atom extends to theta_max = 56.74° from the
+    /// bond axis. The contact patch endpoint (relative to atom 1 at (-1.7,0,0))
+    /// is at (-0.768, 1.422, 0). If the contact/patch boundary is wrong, the
+    /// probe geometry is wrong.
+    #[test]
+    fn two_atom_contact_patch_extent() {
+        let mesh = two_atom_mesh();
+        // Contact patch endpoint: atom1 center + R*(cos(tmax), sin(tmax), 0)
+        // = (-1.7 + 1.7*cos(56.74°), 1.7*sin(56.74°), 0) = (-0.768, 1.422, 0)
+        let target = [-0.768f32, 1.422, 0.0];
+        let mut min_dist = f32::MAX;
+        for p in &mesh.positions {
+            let d = ((p[0] - target[0]).powi(2)
+                + (p[1] - target[1]).powi(2)
+                + (p[2] - target[2]).powi(2))
+            .sqrt();
+            min_dist = min_dist.min(d);
+        }
+        assert!(
+            min_dist < 0.2,
+            "No vertex near contact-patch endpoint (-0.768, 1.422, 0). \
+             Closest: {min_dist:.3} Å. The contact/reentrant boundary is wrong."
+        );
+    }
+
+    /// The mesh must be watertight (every edge shared by exactly 2 triangles).
+    #[test]
+    fn two_atom_watertight() {
+        let mesh = two_atom_mesh();
         let report = mesh::topology::audit(&mesh);
         assert!(report.is_watertight(), "{report:?}");
     }

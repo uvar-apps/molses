@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/molses", "crates/molses-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -14,7 +14,7 @@ authors = ["Ugo Varetto"]
 description = "Solvent Excluded Surface (Connolly surface) generation for molecular structures"
 
 [workspace.dependencies]
-molses = { path = "crates/molses", version = "0.1.0" }
+molses = { path = "crates/molses", version = "0.2.0" }
 pdbtbx = "0.12"
 glam = "0.34"
 rayon = "1.12"

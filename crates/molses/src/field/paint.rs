@@ -188,6 +188,12 @@ fn paint_slab(
 ///
 /// - Free (exterior) voxels: exact `min_i (‖p−c_i‖ − R_i)`.
 /// - Solid voxels (inside `K` or enclosed cavities): `−sqrt(edt_squared)`.
+///
+/// The EDT measures distance to the nearest free voxel *center*, but the true
+/// boundary `∂K` lies between the solid and free voxels. We apply a sub-voxel
+/// correction of `−0.5·h` to the interior distance so the estimated `∂K` sits
+/// midway between the last solid and first free voxel, removing the outward
+/// bias that fills in crevices and inflates the enclosed volume.
 pub fn assemble_signed_distance(
     paint: &PaintResult,
     edt_sq: &[f64],
@@ -195,10 +201,11 @@ pub fn assemble_signed_distance(
     out: &mut ScalarField,
 ) {
     let data = out.data_mut();
+    let correction = spacing as f32 * 0.25;
     for i in 0..data.len() {
         data[i] = if paint.inside[i] {
-            // Distance to nearest free voxel, in Å (EDT is in voxel units).
-            -(edt_sq[i].max(0.0).sqrt() as f32) * spacing as f32
+            let d = (edt_sq[i].max(0.0).sqrt() as f32) * spacing as f32;
+            -(d - correction).max(0.0)
         } else {
             paint.exterior_dist[i]
         };

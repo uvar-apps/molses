@@ -148,7 +148,7 @@ $ molses 1crn.pdb -o 1crn.obj
 
 Output:
 ```
-# molses 0.1.0
+# molses 0.2.0
 # source: 1crn.pdb
 # probe_radius: 1.4  grid_spacing: 0.35  atoms: 327
 # vertices: 81064  triangles: 162124  area: 2264.453  volume: 4962.740

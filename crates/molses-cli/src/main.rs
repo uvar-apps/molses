@@ -268,6 +268,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     );
     let mesh = molses::ses(&structure, &opts)?;
     let topo = molses::mesh::topology::audit(&mesh);
+    let smooth = molses::mesh::quality::analyze(&mesh);
     tracing::info!(
         vertices = mesh.vertex_count(),
         triangles = mesh.triangle_count(),
@@ -277,6 +278,9 @@ fn run(args: Args) -> anyhow::Result<()> {
         non_manifold_edges = topo.non_manifold_edges,
         euler = topo.euler,
         watertight = topo.is_watertight(),
+        roughness = smooth.roughness,
+        normal_dev = smooth.mean_normal_deviation,
+        max_normal_angle = smooth.max_normal_angle,
         "mesh ready"
     );
 

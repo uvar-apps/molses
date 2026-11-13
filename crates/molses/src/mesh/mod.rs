@@ -3,6 +3,7 @@
 pub mod components;
 pub mod normals;
 pub mod polygonize;
+pub mod quality;
 pub mod smooth;
 pub mod topology;
 

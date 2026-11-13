@@ -450,7 +450,7 @@ via a small internal `MaybeParallel` adapter (keeps one code shape).
 ### 9.1 OBJ writer (primary, F-OUT-1)
 
 ```
-# molses 0.1.0
+# molses 0.2.0
 # source: 1crn.pdb
 # probe_radius: 1.4  grid_spacing: 0.35  atoms: 327
 # vertices: 20412  triangles: 40820  area: 4231.7 Å²  volume: 5123.4 Å³
