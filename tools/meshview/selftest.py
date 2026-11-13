@@ -161,6 +161,38 @@ def main() -> int:
         float(np.abs(np.linalg.norm(m.normals, axis=1) - 1).max()) < 1e-9,
     )
 
+    # 7. v//vn indices that differ from v indices must bind by reference, not
+    #    by arrival order. Flat-shaded exports do this constantly.
+    perm = "\n".join(
+        [
+            "v 0 0 0",    # 1 -> should get vn 3 (1,0,0)
+            "v 1 0 0",    # 2 -> vn 1 (0,0,1)
+            "v 0 1 0",    # 3 -> vn 2 (0,1,0)
+            "vn 0 0 1",   # 1
+            "vn 0 1 0",   # 2
+            "vn 1 0 0",   # 3
+            "f 1//3 2//1 3//2",
+            "",
+        ]
+    )
+    with open("/tmp/meshview_perm.obj", "w") as fh:
+        fh.write(perm)
+    pm = load_obj("/tmp/meshview_perm.obj")
+    expected = [[1, 0, 0], [0, 0, 1], [0, 1, 0]]
+    ok = np.allclose(pm.normals, np.asarray(expected, float), atol=1e-9)
+    check("v//vn binds normals by index, not order", ok, str(pm.normals.tolist()))
+
+    # 8. vt-only corners must not be mistaken for normals.
+    with_vt = "\n".join(["v 0 0 0", "v 1 0 0", "v 0 1 0", "vt 0 0", "f 1/1 2/1 3/1", ""])
+    with open("/tmp/meshview_vt.obj", "w") as fh:
+        fh.write(with_vt)
+    vt = load_obj("/tmp/meshview_vt.obj")
+    check(
+        "v/vt falls back to geometric normals",
+        np.allclose(np.abs(vt.normals[:, 2]), 1.0, atol=1e-9),
+        str(vt.normals[0].tolist()),
+    )
+
     print("FAILURES:", len(fails))
     return 1 if fails else 0
 

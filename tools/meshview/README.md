@@ -14,7 +14,7 @@ python3 tools/meshview/render.py ref.obj ours.obj -o cmp.png \
     --zoom 110 --focus 4.29,5.05,4.55 --aa 2 \
     --label reference --label ours
 
-python3 tools/meshview/selftest.py     # 11 checks, no files needed
+python3 tools/meshview/selftest.py     # 13 checks, no input files needed
 ```
 
 ## Why the camera is the whole point
@@ -64,7 +64,9 @@ asserts properties that must hold, rather than diffing stored images:
 | shading varies smoothly, no single-pixel step | normals discontinuous across faces |
 | flipped normals cover identically | visibility depending on normal sign |
 | byte-identical re-render | nondeterminism, e.g. float-order or set iteration |
-| fixture loaded from a hand-written OBJ | the loader itself, incl. `v//vn` and polygon fan-triangulation |
+| fixture loaded from a hand-written OBJ | the loader itself, incl. polygon fan-triangulation |
+| normals bind by `vn` **index**, not arrival order | flat-shaded exports whose `vn` indices differ from `v` |
+| `v/vt` corners fall back to geometric normals | reading a texture index as a normal |
 
 Run it as the pre-commit gate before trusting any picture:
 

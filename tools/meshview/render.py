@@ -29,7 +29,7 @@ import sys
 from dataclasses import dataclass
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 __all__ = ["Mesh", "load_obj", "Camera", "render", "compare"]
 
@@ -55,15 +55,21 @@ class Mesh:
 
 
 def load_obj(path: str) -> Mesh:
-    """Read positions, `vn` normals and triangular faces from a Wavefront OBJ.
+    """Read positions, vertex normals and triangular faces from a Wavefront OBJ.
 
-    Vertex normals are matched through the `v//vn` indices when present and
-    fall back to the vertex order otherwise. Normals are re-normalized because
-    exported files are not always unit length.
+    Corner records in all four forms are accepted — `v`, `v/vt`, `v//vn` and
+    `v/vt/vn` — and a normal is bound to the **position** it is referenced
+    from, so files whose `vn` indices differ from the `v` indices (common for
+    flat-shaded or per-corner-normal exports) load correctly. Polygon faces
+    are fan-triangulated. Vertices that no corner references fall back to
+    area-weighted geometric normals, and everything is re-normalized because
+    exported normals are not always unit length.
     """
     verts: list[tuple[float, float, float]] = []
     vns: list[tuple[float, float, float]] = []
     faces: list[tuple[int, int, int]] = []
+    # Parallel to `faces`: the vn index (0-based) per corner, -1 when absent.
+    normal_idx: list[tuple[int, int, int]] = []
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if line.startswith("v "):
@@ -73,22 +79,37 @@ def load_obj(path: str) -> Mesh:
                 p = line.split()[1:4]
                 vns.append((float(p[0]), float(p[1]), float(p[2])))
             elif line.startswith("f "):
-                idx = []
+                pos, nrm = [], []
                 for tok in line.split()[1:]:
                     parts = tok.split("/")
-                    idx.append(int(parts[0]) - 1)
-                # Fan-triangulate polygons so quad sources work too.
-                for k in range(1, len(idx) - 1):
-                    faces.append((idx[0], idx[k], idx[k + 1]))
+                    pos.append(int(parts[0]) - 1)
+                    # `v//vn` -> parts[2]; `v/vt/vn` -> parts[2]; `v` or `v/vt`
+                    # -> no normal.
+                    n = -1
+                    if len(parts) >= 3 and parts[2]:
+                        n = int(parts[2]) - 1
+                    nrm.append(n)
+                for k in range(1, len(pos) - 1):  # fan-triangulate polygons
+                    faces.append((pos[0], pos[k], pos[k + 1]))
+                    normal_idx.append((nrm[0], nrm[k], nrm[k + 1]))
 
     if not verts:
         raise ValueError(f"{path}: no vertices")
     positions = np.asarray(verts, dtype=FLOAT)
     indices = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
-    if vns and len(vns) == len(verts):
-        normals = np.asarray(vns, dtype=FLOAT)
-    else:
-        normals = _geometric_normals(positions, indices)
+
+    normals = np.zeros((len(verts), 3), dtype=FLOAT)
+    bound = np.zeros(len(verts), dtype=bool)
+    if vns:
+        table = np.asarray(vns, dtype=FLOAT)
+        for tri, nis in zip(faces, normal_idx):
+            for vi, ni in zip(tri, nis):
+                if 0 <= ni < len(table) and not bound[vi]:
+                    normals[vi] = table[ni]
+                    bound[vi] = True
+    if not bound.all():
+        geo = _geometric_normals(positions, indices)
+        normals[~bound] = geo[~bound]
     norm = np.linalg.norm(normals, axis=1, keepdims=True)
     normals = normals / np.maximum(norm, 1e-12)
     return Mesh(positions, normals, indices)
@@ -312,8 +333,6 @@ def compare(
     rows = int(math.ceil(len(images) / cols))
     pad, head = 12, 26
     sheet = Image.new("RGB", (cols * size + (cols + 1) * pad, rows * (size + head) + pad), (248, 248, 248))
-    from PIL import ImageDraw
-
     dr = ImageDraw.Draw(sheet)
     for k, im in enumerate(images):
         r, c = divmod(k, cols)
