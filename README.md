@@ -19,6 +19,7 @@ Sanner et al. 1996].
 - [Library usage](#library-usage)
 - [Mathematical definition](#mathematical-definition)
 - [Accuracy and level of detail](#accuracy-and-level-of-detail)
+- [Tools](#tools)
 - [Feature flags](#feature-flags)
 - [License](#license)
 
@@ -513,6 +514,32 @@ thread count).
 
 ---
 
+## Tools
+
+Development helpers that are not part of the published crates.
+
+| Path | What it is |
+|---|---|
+| [`tools/meshview/`](tools/meshview) | Headless numpy+Pillow rasterizer for comparing meshes side by side at matched camera settings |
+
+`meshview` renders any OBJ with a fixed orthographic camera so several meshes
+land pixel-for-pixel on the same world-space region — the tool that was used to
+find the crevice-quality differences described above. It has no dependency on
+molses and is meant to move into its own repository; see its
+[README](tools/meshview/README.md) for the limits that matter when reading an
+image (orthographic, Lambert-only, and the reason nothing is back-face culled).
+
+```sh
+python3 tools/meshview/render.py ref.obj out.obj -o cmp.png --zoom 110 \
+    --focus 4.29,5.05,4.55 --label reference --label ours
+python3 tools/meshview/selftest.py
+```
+
+A render is for eyeballing; the numbers that decide quality are the `roughness`,
+`normal_dev` and watertightness the CLI logs for every mesh.
+
+---
+
 ## Feature flags
 
 | Feature | Default | Description |
@@ -527,7 +554,7 @@ Disable defaults for a minimal build:
 
 ```toml
 [dependencies]
-molses = { version = "0.1", default-features = false }
+molses = { version = "0.2", default-features = false }
 ```
 
 ---

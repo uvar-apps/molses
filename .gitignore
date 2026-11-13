@@ -1,6 +1,10 @@
 # Build artifacts
 /target/
 
+# Python tooling (tools/)
+__pycache__/
+*.pyc
+
 # Generated meshes (large)
 *.obj
 *.ply
